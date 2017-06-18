@@ -1,0 +1,13 @@
+name = pcm_show
+description = Module providing custom show support for PCM, includes form_alter, presave, and view hooks.
+core = 7.x
+
+package = Open Signal PCM Community Media Advanced
+version = 7.x-1.0
+project = "pcm_show"
+project_status_url = https://github.com/cm-advanced/pcm_show
+
+dependencies[] = aspera
+dependencies[] = cm_show
+scripts[] = pcm_show.js
+

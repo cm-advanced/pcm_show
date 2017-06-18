@@ -1,0 +1,8 @@
+<?php
+
+function pcm_show_install() {
+  db_query("UPDATE {system} SET weight = -1 
+            WHERE type = 'module' 
+            AND name = 'pcm_show'");
+
+}

@@ -1,0 +1,1683 @@
+<?php
+define ("PCM_SHOW_INDIVIDUAL_PROJECT_TYPE_TID", 759);
+define ("PCM_SHOW_SERIES_PROJECT_TYPE_TID", 1);
+define ("PCM_SHOW_TIMEZONE_SHIFT", TRUE);
+define ("PCM_SHOW_AIRINGS_VIEW", 'pcm_show_airings');
+define ("PCM_SHOW_PROJECT_SHOWS_VIEW", 'pcm_project_shows');
+
+/**
+ * @file
+ * Drupal needs this blank file.
+ */
+
+/**                          
+ * Implements hook_init(). 
+ *
+ * Loads all the include files
+ */
+function pcm_show_init() {
+
+  module_load_include('inc', 'pcm_show', 'includes/phpfields');
+} 
+ 
+ 
+/**
+ * Implements hook_form_alter().
+ */
+function pcm_show_form_alter(&$form, &$form_state, $form_id) {
+
+  if (isset($form['#node_edit_form']) && $form['#node_edit_form']
+      && $form['type']['#value'] == 'cm_show') {
+
+    if (isset($form['nid']) && isset($form['nid']['#value']) &&
+	$form['nid']['#value']) {
+      $show_nid = $form['nid']['#value'];
+      $show = $show_nid ? node_load($show_nid) : NULL;
+      $project_field = $show->og_group_ref;
+      $project_nid = isset($project_field[LANGUAGE_NONE]) ?
+	$project_field[LANGUAGE_NONE][0]['target_id'] : NULL;
+
+
+      //for legacy shows, set the defaults on certain fiedls
+      $special_show_scheduling = $form['field_special_show_scheduling']
+	[LANGUAGE_NONE][0]['value']['#default_value'];
+      
+      if (!$special_show_scheduling) {
+	$form['field_special_show_scheduling'][LANGUAGE_NONE][0]
+	  ['value']['#default_value'] = t("Enter Notes Here");
+      }
+      
+      //if we are programming staff display a view block of condensed show info
+      if (user_access('manage pcm_project')) {
+	$view = 
+	  views_get_view('show_request_scheduling_information');
+	if ($view) {
+	  //build and execute the view using the content type of the bucket
+	  $view->set_arguments(array($show_nid));
+	  $output = $view->execute_display('block');   
+	  $result_count = count($view->result);
+	  if ($result_count > 0) {
+	    $form['pcm_show_form_header'] = array(
+						  '#markup'=> 
+						  $output['content'],
+						  '#weight' => -1,
+						  );
+	  }  
+	}
+      }
+    }
+
+    // WE ARE CREATING A SHOW, GRAB PROJECT FROM THE URL
+    else {
+      $show_nid = NULL;
+      $show = NULL;
+      $project_nid = filter_input(INPUT_GET, 'og_group_ref');
+    }
+
+    $project = $project_nid ? node_load($project_nid) : NULL;
+    $project_type = ($project && 
+		     $project->field_cm_project_types[LANGUAGE_NONE]) ?
+      $project->field_cm_project_types[LANGUAGE_NONE][0]['tid'] : NULL;
+
+    $project = node_load($project_nid);
+
+    //fetch the cc show to see if there is a runtime over there
+    $cc_show_id = 
+      pcm_show_get_single_field_value($show, 'field_cablecast_show_id',
+				      'value');
+
+    $cc_show = $cc_show_id ?
+      cablecast_api_server_query('GetShowInformation',
+				 array('ShowID'=>
+				       $cc_show_id)) : NULL;
+    
+    $cc_show = ($cc_show && isset($cc_show->GetShowInformationResult)) ?
+      $cc_show->GetShowInformationResult : NULL;
+
+    $runtime = $cc_show ? $cc_show->TotalSeconds : 0;
+    if ($runtime) {
+      $form['field_runtime'][LANGUAGE_NONE][0]['value']['#default_value']
+	= $runtime;
+    }
+
+    //set temporary title, real title will be set in presave
+    $title = $show ? $show->title : "temp title";    
+    $form['title'] = array(
+			   '#type' => 'hidden',
+			   '#value' => $title,
+			   );
+
+    // special title is no longer used,
+    // show node title is not displayed but is updated here and in 
+    // cablecast
+    unset($form['field_show_special_title']);        
+
+    //if we are creating the show, hide some fields and set a bunch of defaults
+    if (!$show) {
+      unset($form["field_show_scheduling"]);
+      unset($form["field_expected_file_format"]);
+      unset($form["field_expected_filename"]);
+      unset($form["field_aspera_session_id"]);
+      //unset($form["field_expected_filename"]);
+      //unset($form["field_cablecast_show_id"]);      
+
+      if ($project) {
+	$description = isset($project->body[LANGUAGE_NONE]) ?
+	  $project->body[LANGUAGE_NONE][0]['value'] : "";
+
+	$form['field_narrative'][LANGUAGE_NONE][0]['value']['#default_value'] 
+	  = $description;
+	
+	if (isset($project->field_pbcore_genres[LANGUAGE_NONE])) {
+	  $genres = array();
+	  if (isset($project->field_pbcore_genres[LANGUAGE_NONE])) {
+	    foreach($project->field_pbcore_genres[LANGUAGE_NONE] as 
+		    $index => $result) {
+	      $genres[] = $result['tid'];
+	    }
+	  }
+	  $form['field_pbcore_genres'][LANGUAGE_NONE]['#default_value'] = 
+	    $genres;
+	}
+  
+      $short_description = $form['field_short_description']
+          [LANGUAGE_NONE][0]['value']['#default_value'];
+          
+      if (!$short_description) {          
+        $proj_short_description =
+          pcm_show_get_single_field_value($project, 
+                  'field_short_description', 
+                  'value');
+
+        if($proj_short_description) {
+          $form['field_short_description'][LANGUAGE_NONE][0]['value']
+            ['#default_value'] = $proj_short_description;
+        }
+      }  
+
+	//if this being submitted against an airing, fetch its series request
+	$airing_id = filter_input(INPUT_GET, 'airing_id');
+	$airings = $airing_id ? 
+	  entity_load('airing', array($airing_id)) : NULL;
+	
+	$airing = is_array($airings) && $airings ? 
+	  array_pop($airings) : NULL;
+
+	if ($airing) {
+	  $series_request_id = 
+	    pcm_show_get_single_field_value($airing, 
+					    'field_series_request', 
+					    'target_id');
+	  $series_request = $series_request_id ? node_load($series_request_id)
+	    : NULL;
+	}
+
+	if (isset($series_request)) {
+	  $runtime_tid =
+	    pcm_show_get_single_field_value($series_request, 
+					    'field_runtime_default', 
+					    'tid');
+	}
+	else {
+	  $runtime_tid = 
+	    pcm_show_get_single_field_value($project, 
+					    'field_runtime_default',
+					    'tid');
+	}
+
+	$runtime = $runtime_tid ?
+	  pcm_show_get_runtime_seconds_for_tid($runtime_tid) : (28*60+30);
+
+	$form['field_runtime'][LANGUAGE_NONE][0]['value']['#default_value']
+	  = $runtime;
+    
+    
+  if (isset($series_request)) {
+    $is_live =
+      pcm_show_get_single_field_value($series_request, 
+              'field_live', 
+              'value');
+  }
+  else {
+    $is_live = $project ?
+        pcm_show_get_single_field_value($project, 
+                'field_live', 
+                'value') :
+        NULL; 
+  }    
+      }
+    }
+    //FIXME DON'T THINK THIS IS NECESSARY, WHY WHEN WE ARE UPDATING A SHOW
+    //WOULD WE NEED TO SET THE DEFAULT VALUE OF EPISODE NUMBER? TEST FIRST!
+    else {
+      $episode_number = 
+	$show->field_episode_number &&
+	$show->field_episode_number[LANGUAGE_NONE] &&
+	$show->field_episode_number[LANGUAGE_NONE][0] ?
+	$show->field_episode_number[LANGUAGE_NONE][0]['value'] : "";
+      if (!$episode_number) {
+	$episode_number = 
+	  $show->field_episode_number &&
+	  $show->field_episode_number[0] ?
+	  $show->field_episode_number[0]['value'] : "";
+      }
+      $form['field_episode_number'][LANGUAGE_NONE][0]['value']
+	['#default_value'] = $episode_number;
+
+    }
+
+    $is_special = filter_input(INPUT_GET, 'is_special');
+    $is_special = $is_special && $is_special == 'yes' ? TRUE : FALSE;
+    if (!$is_special && $show) {
+      $is_special = 
+	isset($show->field_show_is_special) &&
+	isset($show->field_show_is_special[LANGUAGE_NONE]) &&
+	isset($show->field_show_is_special[LANGUAGE_NONE][0]) ?
+	$show->field_show_is_special[LANGUAGE_NONE][0]['value'] : FALSE;
+    }
+
+    //THE SHOW IS PART OF AN INDIVIDUAL PROJ OR IS A SPECIAL OF A SERIES PROJ
+    if ($project_type == PCM_SHOW_INDIVIDUAL_PROJECT_TYPE_TID || $is_special) {
+      $form['field_show_is_special'][LANGUAGE_NONE]['#description'] = '';
+      $form['field_show_is_special'][LANGUAGE_NONE]['#default_value'] = 1;
+      $form['field_show_is_special'][LANGUAGE_NONE]['#disabled'] = TRUE;
+     
+      if (!user_access('edit own field_show_is_special')) {
+	$form['pcm_show_is_special_and_hidden'] = 
+	  array(
+		'#type' => 'hidden',
+		'#prefix' => 
+		"<div id='pcm_show_is_special_and_hidden_div_cache'".
+		" style='display: none;'>yes</div>",
+		'#value' => 'yes',
+		);
+      }
+      //HIDE EPISODE NUMBER AS NOT USED FOR SPECIALS
+      $form['field_episode_number'] = array(
+					    '#type' => 'hidden',
+					    '#weight' => 3,
+					    '#value' => -1,
+					    );
+
+      //WE WILL HIDE RUNTIME ON EDIT FROM PRODUCERS
+      if ($show && !user_access('administer cm_airing')) {
+	unset($form['field_runtime']);
+      }
+    }
+    //WE ARE A SERIES SHOW NON-SPECIAL
+    else {
+      
+      $form['field_playback_interval'][LANGUAGE_NONE]['#required'] = FALSE;
+      $form['field_day_part'][LANGUAGE_NONE]['#required'] = FALSE;
+      $form['field_playback_comments'][LANGUAGE_NONE]['#required'] = FALSE;
+      $form['field_playback_comments'][LANGUAGE_NONE][0]['#required'] = FALSE;
+      $form['field_playback_comments'][LANGUAGE_NONE][0]['value']['#required'] 
+	= FALSE;
+
+      //WE WILL HIDE THE RUNTIME FOR PRODUCERS ONLY SINCE ITS A SERIES SHOW
+      if (!user_access('administer cm_airing')) {
+	unset($form['field_runtime']);
+      }
+
+      //WHEN CREATING A SERIES SHOW WE BUILD A CUSTOM AIRINGS DROPDOWN
+      if (!$show) {
+	//GET AIRINGS THAT DON'T HAVE SHOWS SUBMITTED AGAINST THEM YET
+	$project_airings_without_shows = 
+	  pcm_show_get_premiere_airings_dropdown($project_nid);
+
+	$airing_id = filter_input(INPUT_GET, 'airing_id');
+	if ($airing_id && $project_airings_without_shows &&
+	    isset($project_airings_without_shows[$airing_id])) {
+	  $airings = $airing_id ? 
+	    entity_load('airing', array($airing_id)) : NULL;
+      
+	  $airing = is_array($airings) && $airings ? 
+	    array_pop($airings) : NULL;
+	  //$form['field_show_is_special'][LANGUAGE_NONE]['#description']='';
+	  //$form['field_show_is_special'][LANGUAGE_NONE]['#default_value']=0;
+	  //$form['field_show_is_special'][LANGUAGE_NONE]['#disabled'] = TRUE;
+	  unset($form['field_show_is_special']);
+	}
+
+	if (isset($project_airings_without_shows) &&
+	    count($project_airings_without_shows) > 0) {
+	  $episode_number = pcm_show_get_next_episode_number($project_nid);
+	  if (isset($episode_number) && $episode_number) {
+	    $form['field_episode_number'][LANGUAGE_NONE][0]['value']
+	      ['#default_value'] = $episode_number;
+	  }
+	}
+  
+	if (isset($airing) && $airing) {    
+	  $airing_date = 
+	    $airing->field_airing_date[LANGUAGE_NONE][0]['value'];    
+    $premiere_object = new DateTime($airing_date, 
+                new DateTimeZone('UTC'));
+    $premiere_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+
+    $airing_start_date = $premiere_object->format('F d, Y g:ia');    
+    
+	  $prefix = 
+	    "<legend><b><br/>".t('Premiere Date').
+	    ":</b><h2>$airing_start_date</h2><a href='/dashboard#my_airings'>
+            Other Premiere Dates</a></legend>";
+           
+    $premiere_date = $premiere_object->format('m-d-y');    
+    $premiere_date_part = $is_live ? ": " . $premiere_date : NULL;
+
+        
+	  $form['field_episode_number']['#prefix'] = $prefix;
+	  $form['attached_airing'] = array(
+					   '#type' => 'hidden',
+					   '#weight' => 3,
+					   '#value' => $airing_id,
+					   );
+	  unset($form['field_playback_preferences']);
+	  unset($form['field_special_show_scheduling']);
+	}
+	//THE PROJECT HAS AIRINGS WITHOUT SHOWS SUBMITTED AGAINST THEM BUT
+	//THERE WAS NO AIRING ID PASSED IN, THEREFORE OFFER DROPDOWN
+	else if ($project_airings_without_shows) {
+	  $project_airings_without_shows = 
+	    array(0=>"<-------SELECT------->") +
+	    $project_airings_without_shows;
+	  $prefix = '<fieldset id="pcm_airing_wrapper">'.
+	    "<legend><span class='fieldset-legend'>".t('Premiere Date').
+	    "<font color='red'>*</font> ".
+	    "</span></legend>";
+	  $suffix = '<p>Choosing a premiere date associates this Show '.
+        'with a group of airings. Please select the premiere date of the '.
+        'airing you wish to submit with this Show record.</p></fieldset>';
+	  
+	  $form['attached_airing'] =
+	    array(
+		  '#type' => 'select',
+		  '#options'=> $project_airings_without_shows,
+		  '#prefix' => $prefix,
+		  '#suffix' => $suffix,
+		  '#weight' => 2,
+		  '#required' => FALSE,
+		  );
+	}
+	else {
+	  $form['field_show_is_special'][LANGUAGE_NONE]['#description'] = '';
+	  $form['field_show_is_special'][LANGUAGE_NONE]['#default_value'] = 1;
+	  $form['field_show_is_special'][LANGUAGE_NONE]['#disabled'] = TRUE;
+	}
+      }
+      // EDITING A SERIES RECORDED SHOW, 
+      // UNSET SOME FIELD AND MAKE OTHER NOT REQUIRED
+      else {
+	$is_special = 
+	  isset($show->field_show_is_special) &&
+	  isset($show->field_show_is_special[LANGUAGE_NONE]) &&
+	  isset($show->field_show_is_special[LANGUAGE_NONE][0]) ?
+	  $show->field_show_is_special[LANGUAGE_NONE][0]['value'] : FALSE;
+	if (!$is_special) {
+	  unset($form['field_playback_preferences']);
+	  unset($form['field_special_show_scheduling']);
+
+	}
+      }
+    }
+    
+    //  SERIES NON-SPECIAL AND SPECIAL
+    if ($project_type == PCM_SHOW_SERIES_PROJECT_TYPE_TID) {
+      $form['pcm_show_is_series'] = 
+        array(
+        '#type' => 'hidden',
+        '#prefix' => 
+        "<div id='pcm_show_is_series_div_cache'".
+        " style='display: none;'>yes</div>",
+        '#value' => 'yes',
+        );
+  
+      // only set the tv_guide if there is no value
+      $tv_guide_title = $form['field_tv_guide_title']
+        [LANGUAGE_NONE][0]['value']['#default_value'];
+        
+      if (!$tv_guide_title) {
+        $form['field_tv_guide_title'][LANGUAGE_NONE][0]
+    ['value']['#default_value'] =
+          isset($premiere_date_part) ?
+                  $project->title . $premiere_date_part :
+                  $project->title;                   
+      }
+  
+      // only set the short description if there is no value
+      $short_description = $form['field_short_description']
+          [LANGUAGE_NONE][0]['value']['#default_value'];
+                          
+      if (!$short_description) {
+        $form['field_short_description'][LANGUAGE_NONE][0]['value']
+          ['#default_value'] = $tv_guide_title;          
+      }      
+    }    
+    
+    //SET VALUES IN DIV FOR JQUERY TO GRAB EASILY
+    $episode_number = isset($episode_number) && $episode_number ? 
+      $episode_number : "";
+
+    $form['pcm_episode_number_div_cache'] = 
+      array(
+	    '#type' => 'hidden',
+	    '#prefix' => 
+	    "<div id='pcm_episode_number_div_cache'>".$episode_number."</div>",
+	    '#value' => $episode_number,
+	    );
+
+    $show_nid = isset($show_nid) && $show_nid ? $show_nid : "";
+    $form['pcm_show_nid_div_cache'] = 
+      array(
+	    '#type' => 'hidden',
+	    '#prefix'=> 
+	    "<div id='pcm_show_nid_div_cache'>".$show_nid."</div>",
+	    '#value' => $show_nid,
+	    );
+  }
+  
+  //hide help text on editable fields on the Series Request: Show Cleanup view
+  if ($form['#form_id'] == 'views_form_series_request_show_cleanup_page') {
+    $counter = 0;
+    while (isset($form['field_episode_number'][$counter])) {
+      $form['field_episode_number'][$counter]['field_episode_number']
+	[LANGUAGE_NONE]['#description'] = "";
+      $form['field_episode_number'][$counter]['field_episode_number']
+	[LANGUAGE_NONE][0]['value']['#description'] = "";
+      $counter ++;
+    }
+
+  }
+}
+
+function pcm_show_get_runtime_seconds_for_tid($tid) {
+  if (!isset($tid) || !$tid) {
+    return NULL;
+  }
+  $term = taxonomy_term_load($tid);
+  if (!$term) {
+    return NULL;
+  }
+
+  $seconds = (isset($term->field_runtime_seconds[LANGUAGE_NONE]) &&
+	      isset($term->field_runtime_seconds[LANGUAGE_NONE][0])) ?
+    $term->field_runtime_seconds[LANGUAGE_NONE][0]['value']: NULL;
+  
+  return $seconds;
+}
+
+function pcm_show_node_presave($node) {
+  if ($node->type == 'cm_show') {
+//dpm($node, 'node');
+
+    // SHOW VARIABLES
+    $allowed_filler = 
+      pcm_show_get_single_field_value($node, 'field_filler', 'value');            
+    if($allowed_filler) {
+      $kill_date = 
+        pcm_show_get_single_field_value($node, 'field_filler_end_date', 'value');  
+    }
+
+    $is_adult = 
+      pcm_show_get_single_field_value(
+      $node, 'field_objectionable_content', 'value');  
+    $is_special = 
+      pcm_show_get_single_field_value($node, 'field_show_is_special', 'value');
+    $is_placeholder = 
+      pcm_show_get_single_field_value($node, 'field_is_placeholder', 'value');    
+
+    $tv_guide_title = 
+      pcm_show_get_single_field_value($node, 'field_tv_guide_title', 'value');
+    $submitted_runtime = 
+      pcm_show_get_single_field_value($node, 'field_runtime');
+    $runtime = $submitted_runtime;
+
+    
+    // PROJECT VARIABLES
+    $project_nid = isset($node->og_group_ref[LANGUAGE_NONE]) ?
+      $node->og_group_ref[LANGUAGE_NONE][0]['target_id'] : NULL;
+    $project = $project_nid ? node_load($project_nid) : NULL;
+
+    $project_name = $project ?   
+        $project->title : NULL;    
+    $project_type = $project ?  
+        pcm_show_get_single_field_value($project, 
+              'field_cm_project_types', 
+              'tid') : 
+        NULL;
+    
+    $project_is_live = $project ?     
+        pcm_show_get_single_field_value($project, 
+                    'field_live', 
+                    'value') :
+        NULL;
+
+    // TITLE VARIABLES
+    $kill_date_part = $kill_date ? 
+      " (". date("m-d-y", strtotime($kill_date)). ")" : "";
+    $adult_part = $is_adult ? " (A)" : "";
+
+    // PLACEHOLDER    
+    if ($is_placeholder) {
+      $title = $project_name . ": TBD";
+      $node->title = $title;
+    }
+    // NON-PLACEHOLDER
+    else {
+      // SERIES SHOW - NON-SPECIAL - project name: premiere date (kill date) (A)
+      if (!$is_special && $project_type == PCM_SHOW_SERIES_PROJECT_TYPE_TID) {
+        $airing_id = (isset($node->attached_airing) && $node->attached_airing) ?
+    $node->attached_airing : NULL;
+
+        $airing_id = $airing_id ? $airing_id :
+    filter_input(INPUT_GET, 'airing_id');
+
+        $premiere_date = NULL;
+        
+        if ($airing_id) {
+    $airings = entity_load('airing', array($airing_id));
+    $airing = array_pop($airings);
+    if ($airing) {
+      $airing_date = 
+        $airing->field_airing_date[LANGUAGE_NONE][0]['value'];
+   
+    }
+        }   
+        
+        //if we have an airing the show was submitted against and there
+        //was no runtime passed in
+        if ($airing_id && !isset($node->field_runtime)) {
+    $start_object = 
+      new DateTime($airing_date, 
+             new DateTimeZone('America/Los_Angeles'));
+
+    $end_object = 
+      new DateTime($airing->field_airing_date[LANGUAGE_NONE][0]['value2'], 
+             new DateTimeZone('America/Los_Angeles'));
+
+    //Set runtime on show based on the Airing start and end times
+    //if we are a Series/non special Show
+    $runtime = $end_object->getTimestamp()-$start_object->getTimestamp();
+    $node->field_runtime[LANGUAGE_NONE][0]['value'] = $runtime;
+        }
+        //if we are editing a show, find its first airing to make sure we set
+        //the premiere date field correctly
+        else if ($node->nid) {
+    $airing = pcm_show_get_premiere_airing($node->nid);
+    if ($airing) {
+      $airing_date = 
+        ($airing->field_data_field_airing_date_field_airing_date_value);
+    }
+        }
+        
+        // TIME SHIFT FOR THE PREMIERE DATE    
+      if (isset($airing_date) && $airing_date) {
+        $premiere_object = 
+    new DateTime($airing_date, 
+             new DateTimeZone('UTC'));
+        $premiere_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+        $premiere_date = $premiere_object->format('m-d-y');
+      }
+          
+        // SERIES REQUEST VARIABLES
+        if (airing) {
+          // Get info on whether series is live
+          $series_request_id = 
+            pcm_show_get_single_field_value($airing, 
+                    'field_series_request', 
+                    'target_id');
+          $series_request = $series_request_id ? node_load($series_request_id)
+            : NULL;
+          $series_request_is_live = isset($series_request) ?
+              pcm_show_get_single_field_value($series_request, 
+                      'field_live', 
+                      'value') :
+              NULL;        
+        }
+        
+        // tv guide title for live
+        $is_live = $series_request_is_live ? $series_request_is_live :
+            $project_is_live;
+        if ($is_live) {    
+          // add the premiere date if the title only contains the project->title
+          // (in other words, the user has not made any changes to the tv title)
+          $scheduled_date_part = $premiere_date ? 
+                ": " . $premiere_date : 
+                "";
+          $tv_guide_title = $tv_guide_title == $project->title ?
+              $project->title . $scheduled_date_part :
+              $tv_guide_title;  
+        }  
+          
+        $premiere_date_part = $premiere_date ?
+              " - ".  $premiere_date :
+              "";
+        $title = $project->title . 
+          $premiere_date_part . $kill_date_part . $adult_part;
+      }
+      // SERIES/INDIVIDUAL SPECIAL
+      else {
+        if ($node->nid && !$is_placeholder) {
+    $airing = pcm_show_get_premiere_airing($node->nid);
+    if ($airing) {
+      $airing_date = 
+        ($airing->field_data_field_airing_date_field_airing_date_value);
+        
+      // time shift for airing retieved from database  
+      if (isset($airing_date) && $airing_date) {
+        $premiere_object = 
+    new DateTime($airing_date, 
+             new DateTimeZone('UTC'));
+        $premiere_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+        $premiere_date = $premiere_object->format('m-d-y');
+      }      
+    }
+    else {
+      global $cm_show_request_valid_airing_data;  
+      if (isset($cm_show_request_valid_airing_data) &&
+          $cm_show_request_valid_airing_data) {            
+        foreach($cm_show_request_valid_airing_data as $airing_data) {
+          // when you create a new date object using a format with slashes and 
+          // dashes it must be in an acceptable format
+          $date = date('m/d/Y', strtotime($airing_data['date']));
+          $time = date('H:i:s', strtotime($airing_data['time']));
+          $start = $date .' ' .$time;
+          
+          // we want the earliest date entered for the premiere date - no time
+          // shift necessary since inputted in local time
+          $airing_date = (isset($airing_date) && $airing_date &&
+            $airing_date < $start) ? $airing_date : $start;         
+        }
+        // need to format the date properly or else timeshift will cause issues
+        $premiere_object = 
+    new DateTime($airing_date, 
+             new DateTimeZone('America/Los_Angeles'));;
+        $premiere_date = $premiere_object->format('m-d-y');
+      }
+    }   
+        }
+             
+        $premiere_date_part = $premiere_date ? 
+              " - ". $premiere_date : "";
+              
+        // SERIES - LIVE/RECORD - SPECIAL - 
+        // <project name>: <tv guide title> - premiere date (kill date) (adult) 
+        if($project_type == PCM_SHOW_SERIES_PROJECT_TYPE_TID) {
+          
+          // tv guide title for live        
+          if ($project_is_live && !is_special) {
+            // add the premiere date if the title only contains the project->title
+            // (in other words, the user has not made any changes to the tv title)
+            $scheduled_date_part = $premiere_date ?
+                ": " . $premiere_date :
+                NULL;
+            $tv_guide_title = $tv_guide_title == $project->title ?
+                $project->title . $scheduled_date_part :
+                $tv_guide_title;          
+          }
+          
+          $title = $project->title. ": ". 
+      $tv_guide_title. $premiere_date_part. $kill_date_part. $adult_part;              
+        }
+        
+        //IND - LIVE/RECORD - <tv guide title> - premiere date (kill date) (adult)
+        if ($project_type == PCM_SHOW_INDIVIDUAL_PROJECT_TYPE_TID) {
+          $title = 
+      $tv_guide_title. $premiere_date_part. $kill_date_part. $adult_part;
+        } 
+      }
+    } // NON-PLACEHOLDER
+
+    if (isset($airing_date) && $airing_date) {
+      // yes, it is spelled incorrectly
+      $node->field_premier_date[LANGUAGE_NONE][0]['value'] = 
+	$premiere_object->format('Y-m-d');
+
+    }
+  
+    //HACK, THE SHOW NODE GETS RESAVED MULTIPLE TIMES BASED ON HOW MANY FIELD
+    //COLLECTIONS, AND FOR SOME REASON WHEN THOSE SHOWS GET SAVED THEY 
+    //DONT HAVE ALL THE DATA WE NEED, SO WE STORE THE TITLE FROM THE FIRST
+    //SAVE AND USE IF FOR SUBSEQUENT SAVES IN THIS REQUEST
+    global $pcm_show_needs_auto_title;
+    $var_name = $node->nid ? "pcm_show_title-".$node->nid : "pcm_show_title";
+
+    // take the value of a variable and treat that as the name of the variable
+    global $$var_name;
+
+    global $global_tv_gd_title;
+    if ($pcm_show_needs_auto_title) {
+      $$var_name = $title;
+
+      $global_tv_gd_title = $tv_guide_title;
+      $node->title = $title;    
+
+      $node->field_tv_guide_title[LANGUAGE_NONE][0]['value'] = $tv_guide_title;
+      $pcm_show_needs_auto_title = FALSE;
+      
+    }
+    else if ($node->nid) {
+      if ($$var_name) {
+	$node->title = $$var_name;
+      }
+      if ($$global_tv_gd_title) {
+    $node->field_tv_guide_title[LANGUAGE_NONE][0]['value'] = $$global_tv_gd_title;        
+        }        
+    }
+
+
+    //if we have a submitted runtime and we have an airing. airing is either
+    //the airing a new show was submitted against or the show's existing 
+    //premiere airing
+    if ($runtime && $airing) {
+      $is_placeholder = 
+	pcm_show_get_single_field_value($node, 'field_is_placeholder');
+      $show_airings = array();
+      //fetch all airings for this show if its not a placeholder
+      if ($node->nid && !$is_placeholder) {
+	$results = pcm_show_get_airings($node->nid);
+	foreach($results as $airing_result) {
+	  $show_airings[] = $airing_result->airing_id;
+	}
+      }
+      else if (!$is_placeholder){
+	$show_airings[] = $airing->airing_id;
+	$results =
+	  isset($airing->field_subsequent_airings) &&
+	  isset($airing->field_subsequent_airings[LANGUAGE_NONE]) &&
+	  $airing->field_subsequent_airings[LANGUAGE_NONE] ?
+	  $airing->field_subsequent_airings[LANGUAGE_NONE] : array();
+	
+	if ($results) {
+	  foreach($results as $airing_id) {
+	    $show_airings[] = $airing_id;
+	  }
+	}
+      }
+      foreach($show_airings as $airing_id) {
+	$airings = entity_load('airing', array($airing_id));
+	$airing = is_array($airings) && $airings ? array_pop($airings) :NULL;
+	if (!$airing) {
+	  continue;
+	}
+
+	$start = pcm_show_get_single_field_value($airing, 
+						 'field_airing_date', 
+						 'value');
+	$start_object = 
+	  new DateTime($start, new DateTimeZone('America/Los_Angeles'));
+
+	$end_object = $start_object;
+
+	$increment_string = 'PT' . $runtime . 'S';
+	$end_object = $end_object->add(new DateInterval($increment_string));
+	$airing->field_airing_date[LANGUAGE_NONE][0]['value2'] = 
+	  $end_object->format('Y-m-d H:i:s');
+
+	field_attach_update('airing', $airing);
+     
+      }
+      
+    }
+    //a runtime was not passed in, therefore check cablecast for one
+    else if (!$runtime) {
+      //IF THE SHOW HAS A CABLECAST SHOW, USE THE RUNTIME FROM THAT
+      $old_runtime = 
+	pcm_show_get_single_field_value($node, 'field_runtime', 'value');
+
+      $cc_show_id = 
+	pcm_show_get_single_field_value($node, 'field_cablecast_show_id',
+					'value');
+
+      $cc_show = $cc_show_id ?
+	cablecast_api_server_query('GetShowInformation',
+				   array('ShowID'=>
+					 $cc_show_id)) : NULL;
+      $cc_show = ($cc_show && isset($cc_show->GetShowInformationResult)) ?
+	$cc_show->GetShowInformationResult : NULL;
+      
+      $cc_runtime = $cc_show ? $cc_show->TotalSeconds : 0;
+      $new_runtime = $cc_runtime ? $cc_runtime : $old_runtime;
+      $new_runtime = $new_runtime ? $new_runtime : 60*28 + 30;
+
+      if ($new_runtime != $old_runtime) {
+	if(user_access('administer cablecast')) {
+	  drupal_set_message("Updated runtime based on Cablecast Show: ".
+			     $new_runtime);
+	}      
+      }
+
+      $node->field_runtime[LANGUAGE_NONE][0]['value'] = $new_runtime;
+    }
+  }
+}
+function pcm_show_get_premiere_airing($nid) {
+  //fetch view
+  $view = views_get_view(PCM_SHOW_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 24589: Missing view:".
+		       PCM_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $view->set_arguments(array($nid));
+
+  //execute and get results
+  $view->execute();
+  $results = $view->result;
+  
+  //grab most recent airing
+  if ($results) {
+    $result = array_shift($results);
+    return $result;
+  }
+  return NULL;
+}
+
+
+function pcm_show_get_season_name_for_date($date) {
+  $next_season = timespan_next('pcmseason');
+
+  if (strtotime($date) < strtotime($next_season['start'])) {
+    return cm_series_request_get_season_name(timespan_current('pcmseason'));
+  }
+  return cm_series_request_get_season_name($next_season);
+}
+
+function pcm_show_node_validate($node) {
+  if ($node->type == 'cm_show') {
+    global $pcm_show_needs_auto_title;
+    $pcm_show_needs_auto_title = TRUE;
+
+    $project_field = $node->og_group_ref;
+    $project_nid = isset($project_field[LANGUAGE_NONE]) ?
+      $project_field[LANGUAGE_NONE][0]['target_id'] : NULL;
+    $project = $project_nid ? node_load($project_nid) : NULL;
+    $project_type = ($project && 
+		     $project->field_cm_project_types[LANGUAGE_NONE]) ?
+      $project->field_cm_project_types[LANGUAGE_NONE][0]['tid'] : NULL;
+
+    $is_special_field = isset($node->field_show_is_special) ?
+      $node->field_show_is_special : array();
+    $is_special = isset($is_special_field[LANGUAGE_NONE]) ?
+      $is_special_field[LANGUAGE_NONE][0]['value'] : NULL;
+
+    if (!$is_special && $project_type == PCM_SHOW_SERIES_PROJECT_TYPE_TID) {
+      $error_msg = t('If you are submitting this show as a regular episode '.
+		     'of your series project you must select a valid '.
+		     'episode number. ');
+      
+      if (!isset($node->field_episode_number) ||
+	  !isset($node->field_episode_number[LANGUAGE_NONE]) ||
+	  !isset($node->field_episode_number[LANGUAGE_NONE][0])) {
+	
+	form_set_error('field_episode_number', $error_msg);
+	return;
+      }
+      $episode_number = $node->field_episode_number[LANGUAGE_NONE][0]['value'];
+      if (!is_numeric($episode_number) || $episode_number < 1) {
+	form_set_error('field_episode_number', $error_msg);
+	return;
+
+      }
+
+      $view = views_get_view(PCM_SHOW_PROJECT_SHOWS_VIEW);
+      if (!$view) {
+	drupal_set_message("Error Code 24589: Missing view:".
+			   PCM_SHOW_PROJECT_SHOWS_VIEW, 'error');
+	return;
+      }
+      //set show nid as argument
+      $view->set_arguments(array($project_nid, $episode_number));
+      
+      //execute and get results
+      $view->execute();
+      $results = $view->result;
+      
+      $result = array_shift($results);
+      if ($result) {
+	if ($result->nid != $node->nid) {
+	  $error_msg = "Sorry, episode number $episode_number has already ".
+	  "been taken by your " . $project->title . " project. Please " .
+	  "select another episode number.";
+	  form_set_error('field_episode_number', $error_msg);
+	  return;
+	}
+      }
+
+      //IF THIS IS A NEW SERIES SHOW, THE PREMIERE DATE MUST BE SELECTED
+      if (!$node->nid) {
+	if (!isset($node->attached_airing) ||
+	    !is_numeric($node->attached_airing) ||
+	    $node->attached_airing < 1) {
+	  $error_msg = t('If you are submitting this show as a regular ' .
+			 'episode of your series project you must select ' .
+			 'your premiere date of the show. This is not the ' .
+			 'premiere date of your whole project, just the ' .
+			 'particular show.');
+
+	  form_set_error('attached_airing', $error_msg);
+	  return;
+	  
+	}
+      }
+    }
+  }
+}
+
+//function called by both insert and update
+function pcm_show_node_post_save(&$node) {
+  if ($node->type != 'cm_show') {
+    return;
+  }
+
+ $airing_id = (isset($node->attached_airing) && $node->attached_airing) ?
+    $node->attached_airing : NULL;
+
+  if ($airing_id) {
+    $airings = entity_load('airing', array($airing_id));
+    $airing = array_pop($airings);
+    if ($airing) {
+        $airing->field_airing_show_ref[LANGUAGE_NONE][0]['target_id'] =
+          $node->nid;
+        entity_save('airing', $airing);
+
+	$subsequent_airings = 
+	  isset($airing->field_subsequent_airings) &&
+	  isset($airing->field_subsequent_airings[LANGUAGE_NONE]) ?
+	  $airing->field_subsequent_airings[LANGUAGE_NONE] : array();
+
+	foreach($subsequent_airings as $subsequent_airing) {
+	  $results = 
+	    entity_load('airing', array($subsequent_airing['target_id']));
+
+	  $new_airing = array_pop($results);
+	  if ($new_airing) {
+	    $new_airing->field_airing_show_ref[LANGUAGE_NONE][0]['target_id'] =
+	      $node->nid;
+	    entity_save('airing', $new_airing);
+	  }
+	}
+    }
+  }
+
+  //check to see if show has a file
+  $filename =pcm_show_get_single_field_value($node, 'field_expected_filename');
+  global $cm_show_requst_skip_postsave;
+
+  global $cm_show_request_skip_missing_file_message; 
+
+  if (!$filename && !isset($cm_show_requst_skip_postsave) &&
+      !isset($cm_show_request_skip_missing_file_message)) {
+    $link = l("<here>", 'node/'.$node->nid.'/upload');
+    drupal_set_message(t("Upload your media file for your show !link or from ".
+			 "your Dashboard below.", array('!link'=>$link)),
+		       'warning');
+  }
+}
+
+function pcm_show_node_update($node) {
+  pcm_show_node_post_save($node);
+}
+
+
+function pcm_show_node_insert($node) {
+  pcm_show_node_post_save($node);
+}
+
+ 
+
+function pcm_show_get_premiere_airings_dropdown($project_nid) {
+  $results = pcm_show_get_premiere_airings($project_nid);
+  $ret = array();
+  while ($result = $results->fetchObject()) {
+    $show = $result->show_nid ? node_load($result->show_nid) : NULL;
+    $is_placeholder = $show &&
+      isset($show->field_is_placeholder) &&
+      isset($show->field_is_placeholder[LANGUAGE_NONE]) &&
+      isset($show->field_is_placeholder[LANGUAGE_NONE][0]) ?
+      $show->field_is_placeholder[LANGUAGE_NONE][0]['value'] : NULL;
+
+    if (!$show || $is_placeholder) {
+      $start_time = 
+	PCM_SHOW_TIMEZONE_SHIFT ? strtotime($result->start_time) + 
+	date('Z',strtotime($result->start_time))
+	: strtotime($result->start_time);
+      $ret[$result->airing_id] = date('m/d/Y h:ia', $start_time);
+    }
+  }
+  return $ret;
+}
+
+function pcm_show_get_premiere_airings($project_nid) {
+  $sql = "
+    SELECT d.entity_id as airing_id, d.field_airing_date_value as start_time, 
+      s.field_airing_show_ref_target_id as show_nid
+    FROM {field_data_field_airing_date} d 
+    INNER JOIN {field_data_field_airing_project_ref} p
+      ON p.entity_id=d.entity_id
+    INNER JOIN {field_data_field_is_show_premiere_date} premiere
+      ON p.entity_id=premiere.entity_id
+    LEFT JOIN {field_data_field_airing_show_ref} s
+      ON p.entity_id=s.entity_id
+    WHERE field_airing_project_ref_target_id = :project_id
+    AND field_is_show_premiere_date_value = 1
+  ";
+
+  $results = db_query($sql, array(':project_id'=>$project_nid));
+  return $results;
+}
+
+
+function pcm_show_get_next_episode_number($project_id) {
+  $sql =
+    "SELECT (max(convert(epnum.field_episode_number_value,unsigned)) + 1)
+       AS episode_number       
+     FROM {node} s
+     LEFT JOIN {og_membership} og_membership
+       ON (s.nid = og_membership.etid AND
+           og_membership.entity_type = 'node')
+     LEFT JOIN {node} p
+       ON og_membership.gid = p.nid
+     INNER JOIN field_data_field_episode_number epnum
+       ON epnum.revision_id=s.vid
+     WHERE (p.nid = :project_id )
+       AND (s.status = '1')
+       AND (s.type IN  ('cm_show'))
+     ORDER BY epnum.field_episode_number_value desc";
+  $result = db_query($sql, array(':project_id'=>$project_id))->fetchObject();
+
+  $episode_number = $result->episode_number ? $result->episode_number : 1;
+  return $episode_number;
+}
+
+function pcm_show_test() {
+ $ret = pcm_show_get_premiere_airings_dropdown(4375);
+}
+
+/**
+ * Function returns a value for the php field on the airings_producer_dashboard
+ * view
+ */
+function pcm_show_title_view_field($row) {
+  $show_nid = $row->nid_1;
+  $show = $show_nid ? node_load($show_nid) : NULL;
+
+  $is_placeholder = isset($show->field_is_placeholder) &&
+    isset($show->field_is_placeholder[LANGUAGE_NONE]) &&
+    isset($show->field_is_placeholder[LANGUAGE_NONE][0]) ?
+    $show->field_is_placeholder[LANGUAGE_NONE][0]['value'] : "";
+
+  if ($is_placeholder) {
+    $ret = '';
+  }
+  else {
+    $special_title = isset($show->field_show_special_title) &&
+      isset($show->field_show_special_title[LANGUAGE_NONE]) &&
+      isset($show->field_show_special_title[LANGUAGE_NONE][0]) ?
+      $show->field_show_special_title[LANGUAGE_NONE][0]['value'] : "";
+
+    
+    $tv_guide_title = isset($show->field_tv_guide_title) &&
+      isset($show->field_tv_guide_title[LANGUAGE_NONE]) &&
+      isset($show->field_tv_guide_title[LANGUAGE_NONE][0]) ?
+      $show->field_tv_guide_title[LANGUAGE_NONE][0]['value'] : "";
+
+    $is_placeholder = isset($show->field_is_placeholder) &&
+      isset($show->field_is_placeholder[LANGUAGE_NONE]) &&
+      isset($show->field_is_placeholder[LANGUAGE_NONE][0]) ?
+      $show->field_is_placeholder[LANGUAGE_NONE][0]['value'] : "";
+
+    $title = $tv_guide_title ? $tv_guide_title : $special_title;
+    $title = $title ? $title : $show->title;
+
+    $ret = l($title, 'node/'.$show->nid.'/edit', 
+	     array('query'=>array('destination'=>'dashboard')));
+  }
+
+  return $ret;
+}
+
+/**
+ * Function returns a value for the php field on the airings_producer_dashboard
+ * view
+ */
+function pcm_show_dashboard_airings_action_view_field($row) {
+  $show = node_load($row->nid_1);
+
+  if ($row->airing_id) {
+    $airings = entity_load('airing', array($row->airing_id));
+    $airing = array_pop($airings);
+    $airing_id = $row->airing_id;
+  }
+  $wrapper = entity_metadata_wrapper('airing', $airing);
+  $is_premiere = $wrapper->field_is_show_premiere_date->value();
+  $live_source = $wrapper->field_live_source->label();
+  
+  /**
+  $offer_upload =  
+    (variable_get('aspera_limit_ip_addresses', 0) && 
+     !aspera_allowed_ip_address(ip_address())) ?  FALSE : TRUE;
+  */
+  if (!$is_premiere || $live_source) {
+    return 'N/A';
+  }
+
+  //fixme, make into a real setting
+  //this is how many days in advance a show must be submitted
+  $day_buffer = variable_get('pcm_show_submission_deadline_in_days',
+			     1);
+
+  //find airing date, truncate time 
+  $date_field = $wrapper->field_airing_date->value();
+  $start_object = new DateTime($date_field['value'], 
+			       new DateTimeZone('UTC'));
+  $start_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+  $start_timestamp = strtotime($start_object->format('m/d/Y'));
+  
+  //find the cutoff time using the number of days variable
+  $cutoff_object = new DateTime('now', 
+				new DateTimeZone('America/Los_Angeles'));
+  $increment_string = '+' . $day_buffer . ' day';
+
+  $cutoff_object->modify($increment_string);
+  $cutoff_timestamp = strtotime($cutoff_object->format('m/d/Y'));
+
+  //if we are past the deadline don't allow show submission
+  if ($start_timestamp <= $cutoff_timestamp) {
+    return t('Past Deadline');
+  }
+
+  $is_placeholder = isset($show->field_is_placeholder) &&
+    isset($show->field_is_placeholder[LANGUAGE_NONE]) &&
+    isset($show->field_is_placeholder[LANGUAGE_NONE][0]) ?
+    $show->field_is_placeholder[LANGUAGE_NONE][0]['value'] : "";
+
+  if ($is_placeholder) {
+    return l("Submit Show", 'node/add/cm-show' ,
+	     array('query'=>array(
+				  'destination'=>'dashboard',
+				  'og_group_ref'=>$row->nid,
+				  'airing_id'=>$row->airing_id,
+				  )
+		   ));
+  }
+  
+  $filename = isset($show->field_expected_filename) &&
+    isset($show->field_expected_filename[LANGUAGE_NONE]) &&
+    isset($show->field_expected_filename[LANGUAGE_NONE][0]) ?
+    $show->field_expected_filename[LANGUAGE_NONE][0]['value'] : "";
+
+  if (!$filename) {
+    return l("Upload File", 'node/'.$row->nid_1.'/upload', 
+	     array('query'=>array(
+				  'destination'=>'dashboard',
+				  )
+		   )); 
+  }
+
+  return 'N/A'; 
+  
+}
+//function for a field on the pcm_project_shows view on the page display
+function pcm_show_airing_block_filename_view_field($row) {
+  $show_nid = $row->nid_1 ? $row->nid_1 : $row->nid;
+  $show = node_load($show_nid);
+
+  if ($row->airing_id) {
+    $airings = entity_load('airing', array($row->airing_id));
+    $airing = array_pop($airings);
+  }
+  $wrapper = entity_metadata_wrapper('airing', $airing);
+  $live_source = $wrapper->field_live_source->label();
+  $is_premiere = $wrapper->field_is_show_premiere_date->value();
+
+  $filename = $show && isset($show->field_expected_filename) &&
+    isset($show->field_expected_filename[LANGUAGE_NONE]) &&
+    isset($show->field_expected_filename[LANGUAGE_NONE][0]) ?
+    $show->field_expected_filename[LANGUAGE_NONE][0]['value'] : "";
+  $is_placeholder = isset($show->field_is_placeholder) &&
+    isset($show->field_is_placeholder[LANGUAGE_NONE]) &&
+    isset($show->field_is_placeholder[LANGUAGE_NONE][0]) ?
+    $show->field_is_placeholder[LANGUAGE_NONE][0]['value'] : "";
+
+  if (!$is_premiere) {
+    $ret = "Repeat"; 
+  }
+  else if ($live_source) {
+    $ret = "Live On: ".$live_source;
+  }
+  else if ($is_placeholder) {
+    $ret = '
+      <div>
+        <img style="width:25px;vertical-align:middle" 
+          src="/sites/default/files/15107_wpm_lowres.png" 
+          alt="Missing Show" title="Missing Show"/>
+        &nbsp;Missing Show!
+      </div>
+      ';
+
+  }
+  else if (!$filename) {
+    $ret = '
+      <div>
+        <img style="width:25px;vertical-align:middle" 
+          src="/sites/default/files/15107_wpm_lowres.png" 
+          alt="Missing File" title="Missing File"/>
+        &nbsp;Missing File!
+      </div>
+      ';
+    
+  }
+  else {
+    $ret = '<img src="/misc/watchdog-ok.png" width="25px"> Complete';
+  }
+  return $ret;
+}
+
+
+//function for a field on the pcm_project_shows view on the page display
+function pcm_show_filename_view_field($row) {
+
+  $show = node_load($row->nid);
+
+  $airing = pcm_show_get_premiere_airing($row->nid);
+ 
+  if ($airing) {
+    $airings = entity_load('airing', array($airing->airing_id));
+    $airing = array_pop($airings);
+  }
+  if ($airing) {
+    $wrapper = entity_metadata_wrapper('airing', $airing);
+    $live_source = $wrapper->field_live_source->label();
+    $is_premiere = $wrapper->field_is_show_premiere_date->value();
+  }
+  
+  if (isset($live_source)) {
+    return "Live On: ".$live_source;
+  }
+
+  $filename = isset($show->field_expected_filename) &&
+    isset($show->field_expected_filename[LANGUAGE_NONE]) &&
+    isset($show->field_expected_filename[LANGUAGE_NONE][0]) ?
+    $show->field_expected_filename[LANGUAGE_NONE][0]['value'] : "";
+  
+  $link = l("Upload", "node/".$show->nid."/upload", 
+	    array('query'=>array('destination'=>'dashboard')));
+
+  if (!$filename) {
+    $ret = '
+      <div>
+        <img style="width:25px;vertical-align:middle" 
+          src="/sites/default/files/15107_wpm_lowres.png" 
+          alt="Missing File" title="Missing File"/>
+        &nbsp;Missing File! -- '.$link.'
+      </div>
+      ';
+  }
+  else {
+    $ret = '<img src="/misc/watchdog-ok.png" width="25px"> Complete';
+  }
+
+  return $ret;
+}
+
+/**
+ * @param $row - a row from a view result from show_admin_displays:page_1 
+ * and :block
+ * @return TRUE/FALSE based on whether or not the row should be filtered
+ */
+function pcm_show_shows_to_be_scheduled_date_filter($row) {
+  $airing = pcm_show_get_premiere_airing($row->nid);
+  //if the airing exists return TRUE to filter row as we only want airingless
+  //shows
+  if ($airing) {
+    return TRUE;
+  }
+
+  //the show has no airing, therefore it shoudl be displayed
+  return FALSE;
+}
+
+/**
+ * @param $row - a row from a view result from show_admin_displays:page_2 
+ * and :block_2
+ * @return TRUE/FALSE based on whether or not the row should be filtered
+ */
+function pcm_show_recently_submited_series_filter($row, $is_block=FALSE) {
+  global $pcm_show_recently_submited_series_filter_counter;
+
+  $pcm_show_recently_submited_series_filter_counter = 
+    isset($pcm_show_recently_submited_series_filter_counter) ? 
+    $pcm_show_recently_submited_series_filter_counter : 0;
+
+  
+  $airing = pcm_show_get_premiere_airing($row->nid);
+  //if the airing exists return TRUE to filter row as we only want airingless
+  //shows
+  if ($airing) {
+    $source = (isset($airing->field_field_live_source) && 
+	       isset($airing->field_field_live_source[0]) &&
+	       isset($airing->field_field_live_source[0]['raw']) &&
+	       isset($airing->field_field_live_source[0]['raw']['value'])) ?
+      $airing->field_field_live_source[0]['raw']['value'] : 0;
+    if ($source) {
+      return TRUE;
+    }
+  }
+  $pcm_show_recently_submited_series_filter_counter ++;  
+  if ($pcm_show_recently_submited_series_filter_counter > 5) {
+    return TRUE;
+  }
+
+  //the show doesn't havve a live airing, therefore this doesn't filter
+  return FALSE;
+}
+
+/**
+ * This delete hook that will find all the airings that were connected to this
+ * show and then hook them up to their placeholder show
+ */
+function pcm_show_node_delete($show) {
+  //GET ARIINGS
+  $show_airings = pcm_show_get_airings($show->nid);
+  foreach($show_airings as $airing_result) {
+    $airings = $airing_result->airing_id ? 
+      entity_load('airing', array($airing_result->airing_id)) : NULL;
+    
+    $airing = is_array($airings) && $airings ? 
+      array_pop($airings) : NULL;
+    
+    //ITERATE OVER AIRINGS AND SET TEH PLACEHOLDER SHOW
+    $airing->field_airing_show_ref[LANGUAGE_NONE][0]['target_id'] = 
+      pcm_airing_get_placeholder_show($airing);
+    entity_save('airing', $airing);
+  }
+}
+
+/**
+ * Will get all the airings for a show
+ */
+function pcm_show_get_airings($nid) {
+  //fetch view
+  $view = views_get_view(PCM_SHOW_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 2499: Missing view:".
+		       PCM_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $view->set_arguments(array($nid));
+
+  //execute and get results
+  $view->execute();
+  $results = $view->result;
+  
+  return $results;
+}
+
+/**
+ *
+ */
+function pcm_show_aspera_cablecast_show_id_field($row) {
+  $show = isset($row->nid) ? node_load($row->nid) : NULL;
+  if ($show) {
+    $cc_show_id = 
+      pcm_show_get_single_field_value($show, 
+					      'field_cablecast_show_id',
+					      'value');
+
+    return $cc_show_id;
+  }
+  return 0;
+}
+/**
+ * implementation the cablecast_show_presave alter hook from cablecast_api
+ */
+function pcm_show_cablecast_show_presave_alter(&$show, &$d_project, &$data) {
+  ///////////////////////////////////////////////////////////////////////
+  //SET TITLES
+  $title = $show->title ? $show->title : $tv_guide_title;
+  
+  $tv_guide_title = 
+    pcm_show_get_single_field_value($show, 'field_tv_guide_title',
+                                         'value');
+  $cg_title = $tv_guide_title ? $tv_guide_title : $title;
+
+  $data['Title'] = $title;
+  $data['CGTitle'] = $cg_title;
+ 
+  ///////////////////////////////////////////////////////////////////////
+  //CATEGORIES
+  $category = 
+    pcm_show_get_single_field_value($show, 'field_pbcore_genres', 'tid');
+
+  $categories = array(
+		      14 => 1,
+		      25 => 2,
+		      33 => 3,
+		      45 => 4,
+		      59 => 5,
+		      98 => 6,
+		      107 => 7,
+		      122 => 8,
+		      74 => 9,
+		      62 => 10,
+		      30 => 11,
+		      72 => 12,
+		      );
+
+  if (isset($categories[$category])) {
+    $data['CategoryID'] = $categories[$category];
+  }
+
+  ///////////////////////////////////////////////////////////////////////
+  //CUSTOM FIELDS
+  //"TVGuide" field 
+  $tv_guide_description = 
+    pcm_show_get_single_field_value($show, 'field_short_description');
+
+  $tv_guide_description = $tv_guide_description ? $tv_guide_description : "";
+  $data['CustomFields'][] = array('Name' => 'TVGuide',
+				  'Value' => $tv_guide_description);
+
+  ///////////////////////////////////////////////////////////////////////
+  //Local Content (formerly/currently Distribuion Agreement)
+  $local_content = '';
+  $was_produced_portland =
+    pcm_show_get_single_field_value($show, 'field_produced_city');
+  $local_content .= $was_produced_portland ? t("Portland") : "";
+  
+  $was_produced_pcm =
+    pcm_show_get_single_field_value($show, 'field_pcm_facilities');
+
+  $local_content .= $was_produced_pcm ? " ".t("PCM") : "";
+
+  //FIXME, MAY WANT TO REMOVE THIS AFTER INITIAL LAUNCH
+  //FIELD NAME IS BEING CHANGED AFTER LAUNCH, SO WE DEFAULT TO THE OLD NAME
+  $field_name = variable_get('pcm_show_local_content_field',
+			     'Distribution Agreement');
+  
+  $data['CustomFields'][] = array('Name' => $field_name,
+				  'Value' => $local_content);
+
+  ///////////////////////////////////////////////////////////////////////
+  //SET "Show Type"
+  $project_type = 
+    pcm_show_get_single_field_value($d_project, 
+					 'field_cm_project_types', 'tid');
+
+  if ($project_type) {
+    $term = taxonomy_term_load($project_type);
+    
+  }
+
+  $term_name = (isset($term) && isset($term->name) && $term->name) ? $term->name :
+    "";
+
+  $data['CustomFields'][] = array('Name' => 'Show Type',
+				  'Value' => $term_name);
+
+  ///////////////////////////////////////////////////////////////////////
+  //set "production Location"
+  $prod_location = 
+    pcm_show_get_single_field_value($show, 'field_produced_where');
+  $data['CustomFields'][] = array('Name' => 'Production Location',
+				  'Value' => ($prod_location ? "Metro" : 
+					      "Foreign"));
+  ///////////////////////////////////////////////////////////////////////
+  //"Filler Start Date"
+  $filler_start_date = 
+    pcm_show_get_single_field_value($show, 'field_filler_start_date');
+
+  ///////////////////////////////////////////////////////////////////////
+  //"Filler End Date"
+  $filler = pcm_show_get_single_field_value($show, 'field_filler');
+
+  $filler = $filler ? 'Y' : 'N';
+
+  if ($filler == 'Y') {
+    //FIXME, MAY WANT TO REMOVE THIS AFTER INITIAL LAUNCH
+    //FIELD NAME IS BEING CHANGED AFTER LAUNCH, SO WE DEFAULT TO THE OLD NAME
+    $field_name = variable_get('pcm_show_cablecast_filler_start_field',
+			       'Filler');
+    $filler_start_date = 
+      $filler_start_date ? date('Y-m-d', strtotime($filler_start_date)) : "";
+    
+    $data['CustomFields'][] = array('Name' => $field_name,
+				  'Value' => $filler_start_date);
+
+
+    $filler_end_date = 
+      pcm_show_get_single_field_value($show, 'field_filler_end_date');
+    
+    $filler_end_date = $filler_end_date ? 
+      date('Y-m-d', strtotime($filler_end_date)) : "";
+    
+    $filler_end_date = $filler . ": " . $filler_end_date ;
+  }
+  else {
+    $filler_end_date = "";
+  }
+  $data['CustomFields'][] = array('Name' => 'Filler End Date',
+				  'Value' => $filler_end_date);
+  ///////////////////////////////////////////////////////////////////////
+  //"CAN"
+  $can = pcm_show_get_single_field_value($show, 'field_can11');
+
+  $can = $can ? "No" : "Schedule on CAN";
+  $data['CustomFields'][] = array('Name' => 'CAN',
+				  'Value' => $can);
+  ///////////////////////////////////////////////////////////////////////
+  //"Safe Harbor"
+  $safe_harbor = 
+    pcm_show_get_single_field_value($show, 'field_objectionable_content');
+
+  $safe_harbor = $safe_harbor ? "Yes" : "No";
+  $data['CustomFields'][] = array('Name' => 'Safe Harbor',
+				  'Value' => $safe_harbor);
+
+  //////////////////////////////////////////////////////////////////////////
+  //make sure we keep event date to the original event date
+  $cc_show_id = $show->field_cablecast_show_id[LANGUAGE_NONE][0]['value'];
+
+  $cc_show = $cc_show_id ?
+    cablecast_api_server_query('GetShowInformation',
+			       array('ShowID'=>
+				       $cc_show_id)) : NULL;
+  $cc_show = ($cc_show && isset($cc_show->GetShowInformationResult)) ?
+    $cc_show->GetShowInformationResult : NULL;
+  
+  if ($cc_show) {
+    $timestamp = strtotime($cc_show->EventDate);
+    
+    $timestamp = PCM_SHOW_TIMEZONE_SHIFT ? $timestamp - 
+	date('Z',$timestamp) : $timestamp;
+    $data['EventDate'] = date('c', $timestamp);
+  }
+}
+/**
+ * implementation the cm_show_request_postsave from cablecast_api
+ */
+function pcm_show_cm_show_request_postsave_alter(&$node, &$airdates, 
+						 &$new_airdates) {
+ 
+    $filler_date = NULL;
+
+    // we want to use the latest date
+    asort($airdates);
+    asort($new_airdates);
+
+    $start_date_airdates = $airdates ? array_pop($airdates) : NULL;
+    $start_date_newairdates = $new_airdates ? array_pop($new_airdates) : NULL;
+
+    if ($start_date_airdates || $start_date_newairdates) {
+        $filler_date =
+      strtotime($start_date_airdates) > strtotime($start_date_newairdates) ?
+      $start_date_airdates : $start_date_newairdates;
+      
+      // if my end date is less than the start date
+        $filler_end_date = $node->field_filler_end_date[LANGUAGE_NONE][0] &&
+      $node->field_filler_end_date[LANGUAGE_NONE][0]['value'] ?
+      $node->field_filler_end_date[LANGUAGE_NONE][0]['value'] : NULL;
+          
+        $filler_date =
+      strtotime($filler_end_date) < strtotime($filler_date) ?
+      $filler_end_date : $filler_date;
+  
+    }
+ 
+    if ($filler_date) {
+        $filler_object = new DateTime($filler_date,
+      new DateTimeZone('UTC'));
+        $filler_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+        $filler_object->add(new DateInterval('P1D'));  // add a day
+        $filler_start_date = $filler_object->format('Y-m-d H:i:s');
+
+        // how should all datetime fields be stored? UTC or LA
+        $node->field_filler_start_date[LANGUAGE_NONE][0]['value'] =
+    $filler_start_date;
+        field_attach_update('node', $node);
+        cm_cablecast_sync_show($node);
+    }
+}
+
+/**
+ * Hook called from cm_cablecast when deleteing a show
+ */
+function pcm_show_cablecast_show_delete_alter(&$show, &$d_project, &$data) {
+  $text = 'DELETED SHOW';
+
+  ///////////////////////////////////////////////////////////////////////
+  //SET TITLES
+  $data['Title'] = $text;
+  $data['CGTitle'] = $text;
+
+  ///////////////////////////////////////////////////////////////////////
+  //CATEGORIES
+  $data['CategoryID'] = 1;
+  
+  ///////////////////////////////////////////////////////////////////////
+  //CUSTOM FIELDS
+  //"TVGuide" field 
+  $tv_guide_description = 
+    pcm_show_get_single_field_value($show, 'field_short_description');
+
+  $data['CustomFields'][] = array('Name' => 'TVGuide',
+				  'Value' => $text);
+
+  ///////////////////////////////////////////////////////////////////////
+  //Local Content (formerly/currently Distribuion Agreement)
+  //FIXME, MAY WANT TO REMOVE THIS AFTER INITIAL LAUNCH
+  //FIELD NAME IS BEING CHANGED AFTER LAUNCH, SO WE DEFAULT TO THE OLD NAME
+  $field_name = variable_get('pcm_show_local_content_field',
+			     'Distribution Agreement');
+  
+  $data['CustomFields'][] = array('Name' => $field_name,
+				  'Value' => '');
+
+  ///////////////////////////////////////////////////////////////////////
+  //SET "Show Type"
+  $data['CustomFields'][] = array('Name' => 'Show Type',
+				  'Value' => '');
+
+  ///////////////////////////////////////////////////////////////////////
+  //set "production Location"
+  $data['CustomFields'][] = array('Name' => 'Production Location',
+				  'Value' => '');
+  
+  $field_name = variable_get('pcm_show_cablecast_filler_start_field',
+			     'Filler');    
+  $data['CustomFields'][] = array('Name' => $field_name,
+				  'Value' => '');
+
+  $data['CustomFields'][] = array('Name' => 'Filler End Date',
+				  'Value' => '');
+  ///////////////////////////////////////////////////////////////////////
+  //"CAN"
+  $data['CustomFields'][] = array('Name' => 'CAN',
+				  'Value' => '');
+  ///////////////////////////////////////////////////////////////////////
+  //"Safe Harbor"
+  $data['CustomFields'][] = array('Name' => 'Safe Harbor',
+				  'Value' => '');
+
+  $timestamp = strtotime('now');
+  $data['EventDate'] = date('c', $timestamp);
+}
+
+/**
+ * Helper function to get a single value off of a entity
+ */
+function pcm_show_get_single_field_value($entity, $field_name, 
+					 $index = 'value') {
+  if (isset($entity->{$field_name})) {
+    $field = $entity->{$field_name};
+    if (isset($field[LANGUAGE_NONE]) && 
+	isset($field[LANGUAGE_NONE][0]) &&
+	isset($field[LANGUAGE_NONE][0][$index])) {
+      return $field[LANGUAGE_NONE][0][$index];
+    }
+  }
+  return NULL;
+}
