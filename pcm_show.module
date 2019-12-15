@@ -23,6 +23,11 @@ function pcm_show_init() {
  
 /**
  * Implements hook_form_alter().
+ *
+ * Cablecast Logic: Will fetch the Cablecast show, and if its runtime is 
+ * different that the drupal show node will populate the runtime field with 
+ * the value from Cablecast so that when its saved the runtime is correctly 
+ * updated
  */
 function pcm_show_form_alter(&$form, &$form_state, $form_id) {
 
@@ -1391,7 +1396,8 @@ function pcm_show_get_airings($nid) {
 }
 
 /**
- *
+ * Helper function from a Drupal View that will load a Show node and find the 
+ * field_cablecast_show_id field on it.
  */
 function pcm_show_aspera_cablecast_show_id_field($row) {
   $show = isset($row->nid) ? node_load($row->nid) : NULL;
@@ -1406,7 +1412,9 @@ function pcm_show_aspera_cablecast_show_id_field($row) {
   return 0;
 }
 /**
- * implementation the cablecast_show_presave alter hook from cablecast_api
+ * implementation the cablecast_show_presave alter hook from cablecast_api 
+ * Will modifiy the passed in $data object to set all the metadata fields for 
+ * the  Show before updating/creating it on Cablecast.
  */
 function pcm_show_cablecast_show_presave_alter(&$show, &$d_project, &$data) {
   ///////////////////////////////////////////////////////////////////////
@@ -1620,7 +1628,9 @@ function pcm_show_cm_show_request_postsave_alter(&$node, &$airdates,
 }
 
 /**
- * Hook called from cm_cablecast when deleteing a show
+ * Implementation of the cablecast_show_delete_alter hook from cablecast_api. 
+ * Will modifiy the passed in $data object to set all the metadata fields for 
+ * the  Show before updating it on Cablecast.
  */
 function pcm_show_cablecast_show_delete_alter(&$show, &$d_project, &$data) {
   $text = 'DELETED SHOW';
