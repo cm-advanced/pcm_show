@@ -3,7 +3,7 @@ description = Module providing custom show support for PCM, includes form_alter,
 core = 7.x
 
 package = Open Signal PCM Community Media Advanced
-version = 7.x-1.0
+version = 7.x-1.3
 project = "pcm_show"
 project_status_url = https://github.com/cm-advanced/pcm_show
 
