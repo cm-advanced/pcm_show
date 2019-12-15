@@ -922,6 +922,20 @@ function pcm_show_node_validate($node) {
 	}
       }
     }
+    $allowed_filler = 
+      pcm_show_get_single_field_value($node, 'field_filler', 'value');         
+    $filler_date = pcm_show_get_single_field_value($node,
+						   'field_filler_end_date',
+						   'value');
+    if ($allowed_filler &&
+	strtotime($filler_date) < strtotime('now')) {
+      $error = 
+	"Sorry, if you would like to have this show be used " .
+	"for filler, you must select a filler end date in the future.";
+      // don't submit the page
+      form_set_error('field_filler_end_date', $error);  
+    }
+
   }
 }
 
@@ -1595,8 +1609,11 @@ function pcm_show_cm_show_request_postsave_alter(&$node, &$airdates,
         $filler_start_date = $filler_object->format('Y-m-d H:i:s');
 
         // how should all datetime fields be stored? UTC or LA
-        $node->field_filler_start_date[LANGUAGE_NONE][0]['value'] =
-    $filler_start_date;
+        $node->field_filler_start_date[LANGUAGE_NONE][0] =
+	  array('value' => $filler_start_date,
+		'timezone_db' => 'America/Los_Angeles',
+		'date_type' => 'datetime');
+	
         field_attach_update('node', $node);
         cm_cablecast_sync_show($node);
     }
@@ -1681,3 +1698,18 @@ function pcm_show_get_single_field_value($entity, $field_name,
   }
   return NULL;
 }
+/**
+ * Implements hook_views_plugins().
+*/
+function pcm_show_views_plugins() {
+  return array(
+	       'argument default' =>
+	       array(
+		     'show_date_range' =>
+		     array(
+			   'title' => t('OpSig Show Date Range'),
+			   'handler' => 'pcm_show_argument_date_range',
+			   ),
+		     ),
+	       );
+}    
